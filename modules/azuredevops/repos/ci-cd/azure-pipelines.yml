@@ -1,0 +1,65 @@
+trigger:
+- '*'
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  APP_SLUG: 'app-name' ## Prefixo do subdominio no cluster
+  CONTAINER_REGISTRY: 'luizotavioacr' ## ACR para upar a imagem
+  IMAGE_TAG: '$(Build.BuildId)-$(Build.SourceBranchName)'  
+  DOMAIN: 'luizotavio.cloud'
+  ${{ if eq(variables['Build.SourceBranchName'], 'master') }}:
+    NAMESPACE: 'master'
+    BUILD_ENV: 'Release'
+  ${{ elseif eq(variables['Build.SourceBranchName'], 'hml') }}:
+    NAMESPACE: 'hml'
+    BUILD_ENV: 'Release'
+  ${{ else }}:
+    NAMESPACE: 'dev'
+    BUILD_ENV: 'Debug'
+
+resources:
+  repositories:
+  - repository: k8s-deploy
+    type: git
+    name: Terraform_Project/CI-CD
+
+jobs:
+- job: Build
+  steps:
+    - checkout: self
+    - task: DockerInstaller@0
+      displayName: install Docker
+      inputs:
+        dockerVersion: '17.09.0-ce'
+
+    - task: Docker@2
+      displayName: Build/Publish Container
+      inputs:
+        command: 'buildAndPush'
+        containerRegistry: $(CONTAINER_REGISTRY)
+        repository: $(APP_SLUG)
+        Dockerfile: '**/Dockerfile'
+        tags: $(IMAGE_TAG)
+
+- job: "Deploy_Manifest_to_K8s"
+  dependsOn: Build
+  steps:
+    - checkout: k8s-deploy
+
+    - script: |
+        python3 generate.py $(APP_SLUG) $(DOMAIN) $(APP_SLUG):$(IMAGE_TAG) $(CONTAINER_REGISTRY) $(NAMESPACE) > $(System.DefaultWorkingDirectory)/k8s-deploy.yml
+      displayName: Deploy Create
+
+    - task: PublishPipelineArtifact@1
+      inputs:
+        targetPath: $(System.DefaultWorkingDirectory)/k8s-deploy.yml
+        artifactName: k8s-app-manifest
+
+    - task: KubernetesManifest@0
+      inputs:
+        action: 'deploy'
+        kubernetesServiceConnection: 'aks_tf_conn'
+        namespace: $(NAMESPACE)
+        manifests: $(System.DefaultWorkingDirectory)/k8s-deploy.yml
